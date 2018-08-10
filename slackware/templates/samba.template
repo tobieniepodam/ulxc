@@ -1,0 +1,16 @@
+#include slackware-micro.template
+samba
+nettle
+openssl
+cyrus-sasl
+gnutls
+libgcrypt
+libgpg-error
+p11-kit
+gamin
+libarchive
+libffi
+libunistring
+lzo
+libxml2
+

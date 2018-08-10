@@ -1,0 +1,25 @@
+#include slackware-micro.template
+mariadb
+sqlite
+apr
+apr-util
+icu4c
+jemalloc
+libiodbc
+libmcrypt
+libxml2
+ca-certificates
+cyrus-sasl
+httpd
+openssl
+php
+
+t1lib
+libX11
+libXpm
+libvpx
+freetype
+libxcb
+libXau
+libXdmcp
+harfbuzz

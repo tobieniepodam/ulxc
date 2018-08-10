@@ -1,0 +1,109 @@
+#!/bin/sh
+
+pgn=$(basename "$0")
+pgd=$(dirname "$0")
+
+. $pgd/../functions
+root_only
+
+
+function get_id() {
+    echo $(get_natural 'Put id (0 = auto)' $1); #mc bug fix: '
+}
+
+
+usystem='no'
+yes_no 'System user' && usystem='yes'
+
+uname=
+while test -z "$uname"; do
+    read -p 'Put name: ' uname
+done
+
+uid=$(get_id 0)
+
+gname=$uname
+while true; do
+    read -e -p 'Put group name: ' -i "$gname" gname
+    test -z "$gname" && continue
+    getent group "$gname" > /dev/null || yes_no "Group '$gname' doesn't exist, continue" || continue
+    break
+done
+
+home=$(get_path 'Home dir' "/home/$uname")
+
+echo
+echo    "New user:"
+echo    "system : $usystem"
+echo    "name   : $uname"
+echo -n "uid    : "; test "$uid" -eq 0 && echo 'auto' || echo "$uid"
+echo    "group  : $gname"
+echo    "home   : $home"
+yes_no || exit
+echo
+
+set -e
+
+getent group "$gname" > /dev/null || {
+    echo "Creating group '$gname'..";
+
+    gsystem='no';
+    yes_no 'System group' && gsystem='yes';
+
+    gid=$(get_id $uid);
+
+    yes_no "Create group $gname (system: $gsystem, id: $gid)" || exit;
+
+    echo -n "Creating group.. ";
+    extra='';
+    test "$gsystem" = 'yes' && extra+=' -r';
+    test "$gid" -gt 0 && extra+=" -g $gid";
+    groupadd $extra $gname;
+    echo 'ok';
+}
+
+echo -n "Creating user.. "
+extra=''
+test "$usystem" = 'yes' && extra+=' -r'
+test "$uid" -gt 0 && extra+=" -u $uid"
+useradd -M -N -s /bin/false -d $home -g $gname $extra $uname
+echo 'ok'
+
+echo 'Subordinate IDS:'
+tmp=$(cat /etc/subuid | grep "^$uname:")
+id_map_u_begin=$(echo "$tmp" | cut -d : -f2)
+id_map_u_count=$(echo "$tmp" | cut -d : -f3)
+tmp=$(cat /etc/subgid | grep "^$uname:")
+id_map_g_begin=$(echo "$tmp" | cut -d : -f2)
+id_map_g_count=$(echo "$tmp" | cut -d : -f3)
+tmp='%-7s %12s %12s\n'
+printf "$tmp" 'type' 'id begin' 'count'
+printf "$tmp" 'uid:' $id_map_u_begin $id_map_u_count
+printf "$tmp" 'gid:' $id_map_g_begin $id_map_g_count
+test "$id_map_u_begin" != "$id_map_u_begin" && echo "Danger! Subordinate uids != gids!"
+
+echo -n "Creating homedir.. "
+mkdir -p "$home/.cache/lxc" "$home/.config/lxc" "$home/.local/share/lxc"
+ln -s /dev/null $home/.bash_history
+ln -s ./.local/share/lxc $home/lxc
+cat << EOF > "$home/.config/lxc/default.conf"
+lxc.network = empty
+lxc.id_map = u 0 $id_map_u_begin $id_map_u_count
+lxc.id_map = g 0 $id_map_g_begin $id_map_g_count
+EOF
+
+chown -R $uname:$gname $home
+find "$home" -type d -exec chmod 700 "{}" \;
+find "$home" -type f -exec chmod 400 "{}" \;
+#chmod -R 700 $home
+echo 'ok'
+
+#echo -n "Set random password && lock account.. "
+#pswd=$(echo "$RANDOM" | md5sum | awk '{print $1}')
+#echo "$name:$pswd" | chpasswd && passwd -l $name > /dev/null
+#echo 'ok'
+echo -n "Lock account (just in case).. "
+passwd -l $uname > /dev/null
+echo 'ok'
+
+bye

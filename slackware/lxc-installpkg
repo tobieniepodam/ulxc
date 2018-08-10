@@ -1,0 +1,38 @@
+#!/bin/sh
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+# IN THE SOFTWARE.
+#
+# Copyright 2017 tobieniepodam@gmail.com
+
+pgname=$(basename "$0")
+pgd=$(dirname "$0")
+
+
+function error_exit() {
+    echo -e "$pgname error: $1" >&2;
+    exit 1;
+}
+
+menu='--menu'
+root=
+pkg=
+while getopts ":r:p:hs" opt; do
+    case $opt in
+        r)  root="$OPTARG";;
+        p)  pkg="$OPTARG";;
+        s)  menu='';;
+        h)  echo "Usage: $pgname -r '/path/to/root/dir' -p '/path/package' [-s (skip menu)]"; exit 0;;
+        \?) error_exit "invalid option -$OPTARG!";;
+        :)  error_exit "option -$OPTARG require value!";;
+    esac
+done
+test -z "$root" && error_exit 'program require -r parametr!'
+test -z "$pkg" && error_exit 'program require -n parametr!'
+test -f "$pkg" || error_exit "package '$pkg' not found!"
+
+installpkg --root "$root" "$menu" "$pkg"

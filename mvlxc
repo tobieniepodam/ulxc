@@ -1,0 +1,29 @@
+#!/bin/sh
+
+pgname=$(basename "$0")
+pgdir=$(dirname "$0")
+
+. $pgdir/../functions
+root_only
+
+
+src=$(get_path 'Path to current lxc container:' '/' 1)
+test -d "$src/rootfs" || yes_no 'Warning, rootfs not fond! Continue' || exit;
+
+dst=$(get_path 'Path to move lxc container:' "$src")
+
+echo
+echo "from : $src"
+echo "to   : $dst"
+yes_no || exit
+
+set -e
+
+echo
+echo -n "Moving LXC.. "
+mv $src $dst
+test -f $dst/config && sed -i "s/${src//\//\\/}/${dst//\//\\/}/g" $dst/config
+test -f $dst/fstab && sed -i "s/${src//\//\\/}/${dst//\//\\/}/g" $dst/fstab
+echo 'ok'
+
+bye

@@ -1,0 +1,14 @@
+#include slackware-micro.template
+slackpkg
+diffutils
+gawk
+ncurses
+which
+wget
+gnupg
+libunistring
+pkgtools
+xargs
+dialog
+bin
+openssl

@@ -1,0 +1,105 @@
+#!/bin/sh
+
+pgname=$(basename "$0")
+pgdir=$(dirname "$0")
+
+. $pgdir/../functions
+root_only
+
+
+function check_offset() {
+    test "$1" -le '-65536' -o "$1" -ge '65536'
+    return $?
+}
+
+function usage() {
+    echo 'Usage:'
+    echo "$pgname -r /path/to/rootfs -i 'XID-base-in' -o 'XID-base-out' [-a (acces time ago)] [-s]"
+    echo "$pgname -h"
+}
+
+
+while getopts ":r:i:o:a:sh" opt; do
+    case $opt in
+        r)  rootfs="$OPTARG";;
+        i)  xid_in="$OPTARG";;
+        o)  xid_out="$OPTARG";;
+        a)  amin="$OPTARG";;
+        s)  silent='yes';;
+        h)  usage; exit 0;;
+        \?) error_exit "invalid option -$OPTARG!";;
+        :)  error_exit "option -$OPTARG require value!";;
+    esac
+done
+
+test -n "$silent" && {
+    test -z "$rootfs" && error_exit 'program require -r parametr!'
+    test -z "$xid_in" && error_exit 'program require -i parametr!'
+    test -z "$xid_out" && error_exit 'program require -o parametr!'
+
+    xid_out_max=$(( xid_out + 65535))
+    xid_offset=$(( xid_out - xid_in ))
+    true
+} || {
+    tmp=${rootfs:-/}
+    rootfs=$(get_path 'Path to root fs dir:' "$tmp" 1)
+
+    tmp=${xid_in:-0}
+    xid_in=$(get_natural "XID base in" "$tmp")
+    xid_in_max=$(( xid_in + 65535 ))
+
+    tmp=${xid_out:-"$(( xid_in_max + 1 ))"}
+    xid_out=$(get_natural "XID base out" "$tmp");
+    xid_out_max=$(( xid_out + 65535 ))
+
+    xid_offset=$(( xid_out - xid_in ))
+    check_offset $xid_offset || {
+        echo
+        echo "Warning, XID offset < 65536!";
+        echo
+    }
+
+    test -z "$amin" && {
+        yes_no 'Use modification time' && amin=$(get_natural "Access time ago [m]" 0);
+        true;
+    } || {
+        amin=$(get_natural "Access time ago [m]" "$amin");
+    }
+
+    echo
+    tmp='%-20s: %s\n'
+    printf "$tmp" 'Rootfs' "$rootfs"
+    printf "$tmp" 'XID in' "$xid_in .. $xid_in_max"
+    printf "$tmp" 'XID out' "$xid_out .. $xid_out_max"
+    printf "$tmp" 'XID offset' "$xid_offset"
+    test -z "$amin" || printf "$tmp" 'Access time ago [m]' $amin
+    yes_no || exit
+}
+
+check_offset $xid_offset || rexid_all='yes';
+
+IFS_old=$IFS
+IFS='
+';
+test -z "$amin" && objects=( $(find "$rootfs") ) || objects=( $(find "$rootfs" -amin "-$amin") )
+IFS=$IFS_old
+
+for obj in "${objects[@]}"; do
+    test -z "$obj" && {
+        continue;
+    }
+
+    uid=$(stat -c '%u' "$obj")
+    gid=$(stat -c '%g' "$obj")
+
+    test -z "$rexid_all" -a "$uid" -ge "$xid_out" -a "$uid" -le "$xid_out_max" -a "$gid" -ge "$xid_out" -a "$gid" -le "$xid_out_max" && {
+        #echo "$obj got valid $uid:$gid, skip"
+        continue;
+    }
+
+    uid=$(( uid + xid_offset ))
+    gid=$(( gid + xid_offset ))
+
+    echo -n "$obj $uid:$gid "
+    chown -h $uid:$gid "$obj" && echo 'ok' || echo 'error'
+done

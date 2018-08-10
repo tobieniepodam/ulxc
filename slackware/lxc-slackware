@@ -1,0 +1,417 @@
+#!/bin/bash
+
+#
+# lxc: linux Container library
+
+# Authors:
+# Daniel Lezcano <daniel.lezcano@free.fr>
+
+# Template for slackware by Matteo Bernardini <ponce@slackbuilds.org>
+# some parts are taken from the debian one (used as model)
+
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
+
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+
+
+pgdir=$(dirname "$0")
+pgname=$(basename $0)
+
+. $pgdir/../../functions
+
+
+install_slackware() {
+    test -d "$rootfs" && {
+        yes_no "Directory $rootfs exist. Continue?" || return 1;
+        yes_no "Remove directory $rootfs?" && rm -rf "$rootfs"
+        echo;
+    }
+
+    $pgdir/lxc-slackpkg -p "$rootfs" -t "$template" -r "$release" -a "$arch" || return $?
+
+    # add a slackpkg default mirror
+    mkdir -p $rootfs/etc/slackpkg
+    echo "Installed slackware $arch $release" > $rootfs/etc/slackpkg/mirrors.info
+
+    # blacklist the devs package (we have to use our premade devices).
+    # do the same with the kernel packages (we use the host's one),
+    # but leave available headers and sources
+    echo "devs" >> $rootfs/etc/slackpkg/blacklist
+    sed -i \
+        -e "s|^#kernel-|kernel-|" \
+        -e "s|^kernel-headers|#kernel-headers|" \
+        -e "s|^kernel-source|#kernel-source|" \
+        $rootfs/etc/slackpkg/blacklist
+
+    return 0
+}
+
+configure_slackware() {
+    echo "Configuring..." ; echo
+
+    # The next part contains excerpts taken from SeTconfig (written by
+    # Patrick Volkerding) from the slackware setup disk.
+    # But before pasting them just set a variable to use them as they are 
+    local hostname=$name
+    local T_PX=$rootfs
+
+    ( cd $T_PX ; chmod 755 ./ )
+    ( cd $T_PX ; chmod 755 ./var )
+    if [ -d $T_PX/usr/src/linux ]; then
+        chmod 755 $T_PX/usr/src/linux
+    fi
+    if [ ! -d $T_PX/proc ]; then
+        mkdir $T_PX/proc
+        chown root.root $T_PX/proc
+    fi
+    if [ ! -d $T_PX/sys ]; then
+        mkdir $T_PX/sys
+        chown root.root $T_PX/sys
+    fi
+    chmod 1777 $T_PX/tmp
+    if [ ! -d $T_PX/var/spool/mail ]; then
+        mkdir -p $T_PX/var/spool/mail
+        chmod 755 $T_PX/var/spool
+        chown root.mail $T_PX/var/spool/mail
+        chmod 1777 $T_PX/var/spool/mail
+    fi
+
+    cat <<EOF > $T_PX/etc/rc.d/rc.keymap
+#!/bin/sh
+# Load the keyboard map.  More maps are in /usr/share/kbd/keymaps.
+if [ -x /usr/bin/loadkeys ]; then
+  /usr/bin/loadkeys us
+fi
+EOF
+    chmod 755 $T_PX/etc/rc.d/rc.keymap
+
+    # Network configuration is left to the user, that have to edit
+    # /etc/rc.d/rc.inet1.conf and /etc/resolv.conf of the container
+    # just set the hostname
+    echo "$hostname.network" > $rootfs/etc/HOSTNAME
+    #cp $rootfs/etc/HOSTNAME $rootfs/etc/hostname
+
+    # make needed devices, from Chris Willing's MAKEDEV.sh
+    # http://www.vislab.uq.edu.au/howto/lxc/MAKEDEV.sh
+    local DEV=$rootfs/dev
+    mkdir -p ${DEV}
+    mknod -m 666 ${DEV}/null c 1 3
+    mknod -m 666 ${DEV}/zero c 1 5
+    mknod -m 666 ${DEV}/full c 1 7
+    mknod -m 666 ${DEV}/random c 1 8
+    mknod -m 666 ${DEV}/urandom c 1 9
+    mknod -m 600 ${DEV}/initctl p;
+    mknod -m 600 ${DEV}/console c 5 1
+    mknod -m 666 ${DEV}/tty c 5 0
+    chown root:tty ${DEV}/tty
+
+    while true; do
+        dev_tty=$(get_natural "tty devices [0..6]" 2);
+        test "$dev_tty" -le 6 && break;
+    done
+    #dev_tty=$(( dev_tty ))
+    local i=0;
+    while test "$i" -lt "$dev_tty"; do mknod -m 666 ${DEV}/tty${i} c 4 ${i}; i=$(( i+1 )); done;
+
+    while true; do
+        dev_pts=$(get_natural "pts devices >= $dev_tty" "$dev_tty");
+        test "$dev_pts" -ge "$dev_tty" && break;
+    done
+    #dev_pts=$(( dev_pts ))
+    test "$dev_tty" -gt 0 && mkdir -m 755 ${DEV}/pts;
+
+    yes_no 'Add dev shm' && {
+        dev_shm=1
+        mkdir -m 1777 ${DEV}/shm;
+    }
+
+    yes_no 'Add dev loopX' && {
+        dev_loop=1;
+        mknod -m 660 ${DEV}/loop0 b 7 0;
+        mknod -m 660 ${DEV}/loop1 b 7 1;
+    }
+    test "$dev_pts" -gt 0 && ln -s pts/ptmx ${DEV}/ptmx
+    ln -s /proc/self/fd ${DEV}/fd
+
+    touch $rootfs/etc/fstab
+
+    # Back up the existing init scripts and install the lxc versions:
+    (
+      cp -a $pgdir/scripts/* $rootfs/etc/rc.d/
+      cd $rootfs/etc/rc.d
+      chmod 755 *.lxc
+      for file in *.lxc ; do
+          mv $(basename $file .lxc) $(basename $file .lxc).orig
+          #ln -s $file $(basename $file .lxc)
+          mv $(basename $file) $(basename $file .lxc)
+      done
+    )
+
+    # restart rc.inet1 to have routing for the loop device
+    echo "#/etc/rc.d/rc.inet1 restart" >> $rootfs/etc/rc.d/rc.local
+
+    # reduce the number of local consoles
+    test "$dev_tty" -lt 6 && sed -i "/^c[$(( dev_tty+1 ))-6]/s/^/# /" $rootfs/etc/inittab;
+
+    # In a container, use shutdown for powerfail conditions.  LXC sends the SIGPWR
+    # signal to init to shut down the container with lxc-stop and without this the
+    # container will be force stopped after a one minute timeout.
+    sed -i "s,pf::powerfail:/sbin/genpowerfail start,pf::powerfail:/sbin/shutdown -h now,g" $rootfs/etc/inittab
+    sed -i "s,pg::powerokwait:/sbin/genpowerfail stop,pg::powerokwait:/sbin/shutdown -c,g" $rootfs/etc/inittab
+
+    # set a default combination for the luggage
+    echo "root:root" | chroot $rootfs chpasswd
+    echo "Root default password is 'root', please change it!"
+    chroot $rootfs passwd -l root
+    echo "Root account locked."
+
+    # /root/.bashrc
+    cat <<EOF > $T_PX/root/.bashrc
+    export TERM=xterm
+    export USER=root
+    export HOME=/root
+    export EDITOR=nano
+    . /etc/profile
+EOF
+
+    # borrow the time configuration from the local machine
+    cp -a /etc/localtime $rootfs/etc/localtime
+
+    return 0
+}
+
+copy_configuration() {
+    local id_map='0 0 65536'
+    local id_map_comment_out='#'
+    test "$sxid" -gt 0 && {
+        id_map="0 $sxid 65536"
+        id_map_comment_out='';
+    }
+
+    local dev_pt_comment_out='#'
+    test "$dev_pts" -gt 0 && dev_pt_comment_out='';
+
+    local dev_shm_comment_out='#'
+    test -n "$dev_shm" && dev_shm_comment_out='';
+
+    local dev_loop_comment_out='#'
+    test -n "$dev_loop" && dev_loop_comment_out='';
+
+    # create fstab
+    cat >$path/fstab <<EOF
+${dev_pt_comment_out}lxcpts $rootfs/dev/pts devpts defaults,newinstance 0 0
+none $rootfs/proc    proc   defaults 0 0
+none $rootfs/sys     sysfs  defaults 0 0
+${dev_shm_comment_out}none /dev/shm tmpfs defaults 0 0
+none /run tmpfs defaults,mode=0755 0 0
+EOF
+    chown $owner_uid:$owner_gid $path/fstab
+
+    # create config
+    cat <<EOF > $path/config
+# $pgname, `date "+%F %R %Z"`
+
+lxc.utsname = $name
+lxc.rootfs = $rootfs
+lxc.start.auto = 0
+
+lxc.tty = $dev_tty
+lxc.pts = $dev_pts
+lxc.console.logfile = $path/console.log
+
+lxc.mount = $path/fstab
+#lxc.mount.auto = cgroup:mixed proc:mixed sys:mixed
+
+${id_map_comment_out}lxc.id_map = u $id_map
+${id_map_comment_out}lxc.id_map = g $id_map
+
+lxc.network.type = empty
+#lxc.network.type = veth
+#lxc.network.flags = up
+#lxc.network.link = lxcbr0
+#lxc.network.veth.pair = veth0o
+#lxc.network.name = veth0i
+#lxc.network.hwaddr = 6c:78:63:x:x:x
+#lxc.network.ipv4 = 10.127.0.10/24
+#lxc.network.ipv4.gateway = 10.127.0.1
+
+lxc.cgroup.devices.deny = a
+
+# Allow any mknod (but not reading/writing the node)
+#lxc.cgroup.devices.allow = c *:* m
+#lxc.cgroup.devices.allow = b *:* m
+
+# null, zero, full, random, urandom
+lxc.cgroup.devices.allow = c 1:3 rwm
+lxc.cgroup.devices.allow = c 1:5 rwm
+lxc.cgroup.devices.allow = c 1:7 rwm
+lxc.cgroup.devices.allow = c 1:8 rwm
+lxc.cgroup.devices.allow = c 1:9 rwm
+
+# tty, console, ptmx, pts
+lxc.cgroup.devices.allow = c 5:0 rwm
+lxc.cgroup.devices.allow = c 5:1 rwm
+${dev_pt_comment_out}lxc.cgroup.devices.allow = c 5:2 rwm
+${dev_pt_comment_out}lxc.cgroup.devices.allow = c 136:* rwm
+# ttyX
+#lxc.cgroup.devices.allow = c 4:0 rwm
+#lxc.cgroup.devices.allow = c 4:1 rwm
+#lxc.cgroup.devices.allow = c 4:2 rwm
+#lxc.cgroup.devices.allow = c 4:3 rwm
+#lxc.cgroup.devices.allow = c 4:4 rwm
+#lxc.cgroup.devices.allow = c 4:5 rwm
+
+# /dev/loopX
+${dev_loop_comment_out}lxc.cgroup.devices.allow = b 7:* rwm
+# /dev/tun
+#lxc.cgroup.devices.allow = c 10:200 rwm
+# /dev/hpet
+#lxc.cgroup.devices.allow = c 10:228 rwm
+# /dev/fuse
+#lxc.cgroup.devices.allow = c 10:229 rwm
+# /dev/rtc
+#lxc.cgroup.devices.allow = c 254:0 rm
+
+
+lxc.cap.drop = mac_admin mac_override sys_time sys_module sys_rawio sys_chroot mknod setfcap setpcap net_raw
+#lxc.cap.keep =
+
+lxc.seccomp = /usr/share/lxc/config/common.seccomp
+
+EOF
+    if [ $? -ne 0 ]; then
+        echo "Failed to add configuration."
+        return 1
+    fi
+
+    chown $owner_uid:$owner_gid $path/config
+
+    return 0
+}
+
+
+echo $pgname
+echo
+
+root_only
+
+owner=$(whoami)
+while true; do
+    read -e -p 'LXC owner (username): ' -i "$owner" owner
+    test -n "$owner" -a -n "`id $owner 2>/dev/null`" && break
+    echo "User '$owner' doesn't exist!"
+done
+owner_uid=$(id -u $owner)
+owner_gid=$(id -g $owner)
+
+name='slackwarecontainer'
+while true; do
+    read -e -p 'LXC name: ' -i $name name
+    test -n "$name" && break
+done
+
+test "$owner" = "root" && {
+    path="/var/lib/lxc/$name";
+} || {
+    path=$(getent passwd $owner | cut -d: -f6);
+    path="$path/.local/share/lxc/$name";
+}
+path=$(get_path 'LXC path:' "$path")
+
+config="$path/config"
+if grep -q '^lxc.rootfs' $config 2>/dev/null ; then
+    rootfs=$(awk -F= '/^lxc.rootfs =/{ print $2 }' $config)
+else
+    rootfs=$path/rootfs
+fi
+rootfs=$(get_path 'LXC rootfs:' "$rootfs")
+
+sxid=$(get_natural 'LXC map uid' 65536)
+
+release='current'
+while true; do
+    read -e -p 'Slackware release: ' -i $release release
+    test -n "$release" && break
+done
+
+case "$( uname -m )" in
+    i?86) arch=i486 ;;
+    arm*) arch=arm ;;
+       *) arch=$( uname -m ) ;;
+esac
+while true; do
+    read -e -p 'Slackware arch: ' -i $arch arch
+    test -n "$arch" && break
+done
+
+templates=()
+for template in $pgdir/templates/*.template; do
+    template=${template##*/}
+    template=${template%.template}
+    templates+=("$template")
+done
+echo 'Select template:'
+for i in ${!templates[@]}; do echo $i. ${templates[$i]}; done
+while true; do
+    i=$(get_natural 'Template')
+    test ! -z ${templates[$i]} && break
+done
+template=${templates[$i]}
+
+
+# confirm
+echo
+echo "LXC owner:          $owner"
+echo "LXC name:           $name"
+echo "LXC path:           $path"
+echo "LXC rootfs:         $rootfs"
+echo "LXC map id:         $sxid"
+echo "Slackware release:  $release"
+echo "Slackware arch:     $arch"
+echo "Template:           $template"
+yes_no || exit 0
+echo
+
+set -e
+
+
+install_slackware
+if [ $? -ne 0 ]; then
+	echo "Failed to install slackware."
+	exit 1
+fi
+
+echo
+
+configure_slackware
+if [ $? -ne 0 ]; then
+	echo "Failed to configure slackware for a container."
+	exit 1
+fi
+
+echo
+
+copy_configuration
+if [ $? -ne 0 ]; then
+	echo "Failed to write configuration file."
+	exit 1
+fi
+
+yes_no 'Remove /usr/include/* /usr/man/*' && {
+    rm -rf $rootfs/usr/include/*
+    rm -rf $rootfs/usr/man/*
+}
+
+test $sxid -gt 0 && $pgdir/../rexid -s -r "$rootfs" -i "0" -o "$sxid"
+chown $owner_uid:$owner_gid $path
+chown $owner_uid:$owner_gid $rootfs

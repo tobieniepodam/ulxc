@@ -1,0 +1,49 @@
+#!/bin/sh
+
+pgname=$(basename "$0")
+pgdir=$(dirname "$0")
+
+. $pgdir/../functions
+root_only
+
+
+ftouch() {
+    test -f "$1" && {
+        echo "File '$1' exist."
+    } || {
+        echo -n "Creating '$1'.."
+        touch "$1"
+        echo 'ok'
+    }
+    ls -l "$1" | cut -d' ' -f1,3,4
+    cat "$1"
+    echo
+}
+
+function remix() {
+    test -z "$1" && { echo "$pgname error: function require arg!" >&2; exit 1; }
+    echo -n "Remix $1.. "
+    test -d $1-mix || mkdir $1-mix/
+    test -L $1 && rm $1 || mv $1/ $1-mix/$SLACKWARE_VERSION-$ARCH/
+    ln -s $1-mix/$SLACKWARE_VERSION-$ARCH $1
+    echo 'ok'
+}
+
+
+set -e
+
+ftouch /etc/subuid
+ftouch /etc/subgid
+
+SLACKWARE_VERSION=$(cat /etc/slackware-version | cut -f2 -d\ )
+
+ARCH=$( uname -m )
+case "$ARCH" in
+    i?86) ARCH=i486 ;;
+    arm*) ARCH=arm ;;
+esac
+
+remix /var/cache/packages
+remix /var/lib/slackpkg
+
+bye

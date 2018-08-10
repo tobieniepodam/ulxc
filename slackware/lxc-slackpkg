@@ -1,0 +1,228 @@
+#!/bin/bash
+
+#
+# lxc: linux Container library
+
+# Authors:
+# Daniel Lezcano <daniel.lezcano@free.fr>
+
+# Template for slackware by Matteo Bernardini <ponce@slackbuilds.org>
+# some parts are taken from the debian one (used as model)
+
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
+
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+
+
+wd=$(pwd)
+
+# Use the primary Slackware site by default, but please consider changing
+# this to a closer mirror site.
+MIRROR=${MIRROR:-http://ftp.slackware.com/pub/slackware}
+
+
+function yes_no() {
+    local msg='Continue';
+    if [ -n "$1" ]; then msg="$1"; fi;
+
+    read -e -n1 -p "$msg (y/*)? " yn
+    if [ "$yn" != 'y' ]; then return 1; fi;
+    return 0;
+}
+
+install_slackware_pkgs() {
+    mkdir -p /var/lock/subsys/
+    (
+    flock -n -x 200
+    if [ $? -ne 0 ]; then
+        echo "Cache repository is busy."
+        return 1
+    fi
+
+    if [ "$arch" == "x86_64" ]; then
+        PKGMAIN=slackware64
+    elif [ "$arch" == "arm" ]; then
+        PKGMAIN=slackwarearm
+    else
+        PKGMAIN=slackware
+    fi
+
+    test -d "$1" || mkdir -p "$1"
+
+    local TEMP=/var/cache/packages-mix/$release-$arch
+    local WORKDIR=/var/lib/slackpkg-mix/$release-$arch
+    export CONF=$wd/slackpkg-conf/$release-$arch
+    export ROOT=$(realpath $1)
+
+    mkdir -p $TEMP $WORKDIR $CONF
+    ln -s -f -T '../../templates/' $CONF/templates
+
+    echo "$MIRROR/$PKGMAIN-$release/" > $CONF/mirrors
+    touch $CONF/blacklist
+
+    cat <<EOF > $CONF/slackpkg.conf
+# v2.8
+ARCH=$arch
+TEMP=$TEMP
+WORKDIR=$WORKDIR
+DELALL=off
+CHECKMD5=on
+CHECKGPG=on
+CHECKSIZE=off
+PRIORITY=( patches %PKGMAIN extra pasture testing )
+POSTINST=on
+ONLY_NEW_DOTNEW=off
+ONOFF=on
+DOWNLOAD_ALL=on
+DIALOG=off
+BATCH=on
+DEFAULT_ANSWER=y
+USE_INCLUDES=on
+SPINNING=off
+USE_INCLUDES=on
+EOF
+
+    # clean previous installs
+    #rm -fR $ROOT/*
+
+    slackpkg -default_answer=n update
+    slackpkg install-template $TEMPLATE
+
+    return $?
+
+    ) 200>/var/lock/subsys/lxc-slackpkg
+
+    return $?
+}
+
+clean() {
+    if [ ! -e $cache ]; then
+        exit 0
+    fi
+
+    # lock, so we won't purge while someone is creating a repository
+    (
+    flock -n -x 200
+    if [ $? != 0 ]; then
+        echo "Cache repository is busy."
+        exit 1
+    fi
+
+    echo -n "Purging the download cache..."
+    rm --preserve-root --one-file-system -rf $cache && echo "Done." || exit 1
+    exit 0
+
+    ) 200>/var/lock/subsys/lxc-slackpkg
+}
+
+usage() {
+    cat <<EOF
+$1
+  -h|--help
+  -p|--path=<path>
+  -a|--arch=<arch>
+  -r|--release=<slackware release>
+  -t|--template=<template name>
+  -c|--clean
+EOF
+    return 0
+}
+
+
+options=$(getopt -o hp:a:r:t:c -l help,path:,name:,arch:,release:,template:,clean --  "$@")
+if [ $? -ne 0 ]; then
+	usage $(basename $0)
+	exit 1
+fi
+eval set -- "$options"
+
+while true
+do
+case "$1" in
+    -h|--help)      usage $0 && exit 0;;
+    -p|--path)      path=$2; shift 2;;
+    -a|--arch)      arch=$2; shift 2;; 
+    -r|--release)   release=$2; shift 2;;
+    -t|--template)  TEMPLATE=$2; shift 2;;
+    -n|--name)      name=$2; shift 2;;
+    -c|--clean)     clean=$2; shift 2;;
+    --)             shift 1; break ;;
+    *)              break ;;
+esac
+done
+
+if [ ! -z "$clean" -a -z "$path" ]; then
+	clean || exit 1
+	exit 0
+fi
+
+type installpkg
+if [ $? -ne 0 ]; then
+	echo "'installpkg' command is missing."
+	exit 1
+fi
+
+type slackpkg
+if [ $? -ne 0 ]; then
+	echo "'slackpkg' command is missing."
+	exit 1
+fi
+
+if [ -z "$path" ]; then
+	echo "'path' parameter is required."
+	exit 1
+fi
+
+if [ -z "$TEMPLATE" ]; then
+    echo "'template' parameter is required."
+    exit 1
+fi
+if [ ! -f "$wd/templates/$TEMPLATE.template" ]; then
+    echo "template '$TEMPLATE' not found."
+    exit 1
+fi
+
+if [ "$(id -u)" != "0" ]; then
+	echo "This script should be run as 'root'."
+	exit 1
+fi
+
+# If no arch was specified autodetect
+if [ -z "$arch" ]; then
+case "$( uname -m )" in
+    i?86) arch=i486 ;;
+    arm*) arch=arm ;;
+       *) arch=$( uname -m ) ;;
+esac
+fi
+
+# If no release version was specified, use current
+test -z "$release" && {
+    test -f "$path/etc/slackware-version" && release=$(grep -Po '\d+\.\d+$' "$path/etc/slackware-version") || release='current'
+    yes_no "Warning, no release specified. Use '$release'" || exit
+}
+
+echo
+
+set -e
+
+install_slackware_pkgs "$path"
+if [ $? -ne 0 ]; then
+	echo "Failed to install slackware packages."
+	exit 1
+fi
+
+if [ ! -z $clean ]; then
+	clean || exit 1
+	exit 0
+fi
