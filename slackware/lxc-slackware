@@ -407,11 +407,32 @@ if [ $? -ne 0 ]; then
 	exit 1
 fi
 
-yes_no 'Remove /usr/include/* /usr/man/*' && {
+yes_no 'Remove /usr/include/* /usr/man/* /usr/doc/*' && {
     rm -rf $rootfs/usr/include/*
-    rm -rf $rootfs/usr/man/*
+    rm -rf $rootfs/usr/doc/*
+    find $rootfs/usr/man/ -type f -exec rm "{}" \;
 }
 
 test $sxid -gt 0 && $pgdir/../rexid -s -r "$rootfs" -i "0" -o "$sxid"
 chown $owner_uid:$owner_gid $path
-chown $owner_uid:$owner_gid $rootfs
+chmod 700 $path
+chmod 750 $rootfs
+
+yes_no "Check (and set acl) access '$rootfs' for uid $sxid" && {
+    dirs=()
+    path="$rootfs"
+    while test -n "$path"; do
+        dirs=( $(basename "$path") "${dirs[@]}" )
+        path=${path%/*}
+    done
+
+    path=''
+    for d in ${dirs[@]}; do
+        path="$path/$d"
+        sudo -u "#$sxid" -s cd $path 2>/dev/null && continue;
+        echo -en "Access denied $sxid@$path .. "
+        setfacl -m u:$sxid:x $path && sudo -u "#$sxid" -s cd $path 2>/dev/null && echo 'fixed' && continue;
+        echo 'error'
+        break
+    done
+}

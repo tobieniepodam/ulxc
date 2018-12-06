@@ -2,12 +2,13 @@
 
 pgname=$(/bin/basename $0)
 
-if [ -f "/etc/rc.d/$pgname.conf" ]; then
-    . /etc/rc.d/$pgname.conf
-else
-    /bin/echo "$pgname error: conifg file not found!"
-    exit 1
-fi
+#if [ -f "/etc/rc.d/$pgname.conf" ]; then
+#    . /etc/rc.d/$pgname.conf
+#else
+#    /bin/echo "$pgname error: conifg file not found!"
+#    exit 1
+#fi
+users=( 'ulxc' )
 
 
 cgroups=(blkio cpu cpuacct cpuset devices freezer memory net_cls net_prio perf_event pids)

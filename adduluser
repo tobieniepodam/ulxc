@@ -93,9 +93,8 @@ lxc.id_map = g 0 $id_map_g_begin $id_map_g_count
 EOF
 
 chown -R $uname:$gname $home
+chmod -R 600 $home
 find "$home" -type d -exec chmod 700 "{}" \;
-find "$home" -type f -exec chmod 400 "{}" \;
-#chmod -R 700 $home
 echo 'ok'
 
 #echo -n "Set random password && lock account.. "
