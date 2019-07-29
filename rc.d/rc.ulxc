@@ -2,92 +2,45 @@
 
 pgname=$(/bin/basename $0)
 
-#if [ -f "/etc/rc.d/$pgname.conf" ]; then
-#    . /etc/rc.d/$pgname.conf
-#else
-#    /bin/echo "$pgname error: conifg file not found!"
-#    exit 1
-#fi
-users=( 'ulxc' )
+users=(
+    'ulxc'
+)
 
 
-cgroups=(blkio cpu cpuacct cpuset devices freezer memory net_cls net_prio perf_event pids)
-t='  * '
+CGM=/usr/bin/cgm
+CUT=/usr/bin/cut
+ECHO=/usr/bin/echo
+LXC_START=/usr/bin/lxc-start
+LXC_STOP=/usr/bin/lxc-stop
+LXC_AUTOSTART=/usr/bin/lxc-autostart
+SLEEP=/usr/bin/sleep
+
 
 get_ulxcpath() {
     local homedir=$(getent passwd "$1" | cut -d: -f6)
     local lxcconf="$homedir/.config/lxc/lxc.conf"
     test -f "$lxcconf" \
-        && cat "$lxcconf" | grep -P '^\s*lxc\.lxcpath\s*=' | sed 's/^.*=[ \t]*//' \
+        && grep -P '^\s*lxc\.lxcpath\s*=' "$lxcconf" | sed 's/^.*=[ \t]*//' \
         || echo "$homedir/.local/share/lxc/"
-}
-
-user_cgroups_add() {
-
-    /bin/echo -n "${t}creating $1 cgroups.. "
-    local uid=$(id -u $1)
-    local gid=$(id -g $1)
-    local cg cgdir
-    for cg in "${cgroups[@]}"; do
-        cgdir="/sys/fs/cgroup/$cg"
-        /bin/test -d "$cgdir" || {
-            /bin/echo "error ('$cg' not found)!";
-            return 1;
-        }
-        cgdir="$cgdir/$1"
-        /bin/test -d "$cgdir" || /bin/mkdir -p "$cgdir" 2>/dev/null || {
-            /bin/echo "error (can't create $cg/$1)!";
-            return 1;
-        }
-        /bin/chown $uid:$gid $cgdir 2>/dev/null || {
-            /bin/echo "error (can't chown $cg/$1)!";
-            return 1;
-        }
-        /bin/chown $uid $cgdir/tasks 2>/dev/null || {
-            /bin/echo "error (can't chown $cg/$1/tasks)!";
-            return 1;
-        }
-
-        echo 1 > $cgdir/cgroup.clone_children
-        test "$cg" = "memory" && echo 1 > $cgdir/memory.use_hierarchy
-    done
-    echo 'ok'
-}
-
-user_croups_delete() {
-    /bin/echo -n "${t}deleting $1 cgroups.. "
-    local cg estr=''
-    for cg in "${cgroups[@]}"; do
-        test -d "/sys/fs/cgroup/$cg/$1" && { cgdelete -r -g $cg:$1/ 2>/dev/null || estr+=" $cg:$1"; }
-    done
-    test -z "$estr" && echo 'ok' || echo "error: can't delete$estr"
 }
 
 ulxc_start() {
     echo "Starting unprivileged LXC.."
-    local user ulxpath ulxcs ulxc sucmd
+    local user ulxpath sucmd
     for user in "${users[@]}"; do
         ulxcpath=$(get_ulxcpath $user)
-        /bin/test -d "$ulxcpath" && ulxcs=$(/usr/bin/lxc-ls -P $ulxcpath 2>/dev/null) || {
-            /bin/echo "${t}warning: can't find any $user's lxc ($ulxcpath)!"
+        if test -d "$ulxcpath" -a -z "`$LXC_AUTOSTART -LaP $ulxcpath`"; then
+            echo "   warning: can't find any $user's lxc ($ulxcpath) to start!"
             continue
-        }
+        fi
 
-        #user_cgroups_add $user || continue
-        #exit
-        /usr/bin/cgm create all $user
-        /usr/bin/cgm chown all $user $(/usr/bin/id -u $user) $(/usr/bin/id -g $user)
+        $CGM create all $user 1>/dev/null 2>/dev/null
+        $CGM chown all $user $(id -u $user) $(id -g $user) 1>/dev/null 2>/dev/null
 
-        for ulxc in ${ulxcs[*]}; do
-            /usr/bin/lxc-info -P "$ulxcpath" -n "$ulxc" -c 'lxc.start.auto' | /bin/grep -iP '^lxc.start.auto.+1$' > /dev/null && \
-            /usr/bin/lxc-info -P "$ulxcpath" -n "$ulxc" | /bin/grep -iP '^State.+STOPPED$' > /dev/null && {
-                /bin/echo -n "${t}$user:$ulxc starting.. "
-                sucmd="for cg in ${cgroups[*]}; do /bin/echo \$\$ > /sys/fs/cgroup/\$cg/$user/tasks; done; /bin/sleep 1; /usr/bin/lxc-start -n '$ulxc' -d"
-                su -l $user -s /bin/sh -c "$sucmd" 2>/dev/null && /bin/echo 'ok' || /bin/echo 'error'
-            }
-        done
+        sucmd="$CGM movepid all $user \$\$; $SLEEP 1; $LXC_AUTOSTART -La | $CUT -d' ' -f1 | while read n; do $ECHO -n \" - $user:\$n starting.. \"; $LXC_START -d -n \$n 2>/dev/null && $ECHO 'ok' || $ECHO 'error'; done;"
+        su -l $user -s /bin/bash -c "$sucmd"
     done
-    /bin/echo
+    echo
 }
 
 ulxc_stop() {
@@ -95,17 +48,16 @@ ulxc_stop() {
     local user ulxpath ulxcs ulxc sucmd
     for user in "${users[@]}"; do
         ulxcpath=$(get_ulxcpath $user)
-        /bin/test -d "$ulxcpath" && ulxcs=$(/usr/bin/lxc-ls -P $ulxcpath --active 2>/dev/null) || continue
+        if test -d "$ulxcpath" -a -z "`$LXC_AUTOSTART -LsaP $ulxcpath`"; then
+            echo "   warning: can't find any $user's lxc ($ulxcpath) to stop!"
+            continue
+        fi
 
-        local sucmd=''
-        for ulxc in ${ulxcs[*]}; do
-            /bin/echo -n "${t}$user:$ulxc stopping.. "
-            sucmd="/usr/bin/lxc-stop -n '$ulxc' 2>/dev/null"
-            su -l $user -s /bin/sh -c "$sucmd" && /bin/echo 'ok' || /bin/echo 'error'
-        done
+        sucmd="$LXC_AUTOSTART -Lsa | $CUT -d' ' -f1 | while read n; do $ECHO -n \" - $user:\$n stopping.. \"; $LXC_STOP -n \$n 2>/dev/null && $ECHO 'ok' || $ECHO 'error'; done;"
+        su -l $user -s /bin/bash -c "$sucmd"
+
         sleep 2
-        /usr/bin/cgm remove all $user
-        #user_croups_delete $user
+        $CGM remove all $user
     done
     /bin/echo
 }
@@ -116,10 +68,6 @@ case "$1" in
         ulxc_start;;
     'stop')
         ulxc_stop;;
-    'restart')
-        ulxc_restart;;
-    'status')
-        ulxc_status;;
     *)
-        echo "usage $0 start|stop|restart|status"
+        echo "usage $0 start|stop"
 esac
